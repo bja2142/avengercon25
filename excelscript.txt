@@ -1,0 +1,198 @@
+export interface Request {
+    name: string;
+    inputs: Inputs;
+    outputs: Outputs;
+    startTime: Date;
+    endTime: Date;
+    trackingId: string;
+    clientTrackingId: string;
+    originHistoryName: string;
+    status: string;
+}
+
+export interface Inputs {
+    method: string;
+}
+
+export interface Outputs {
+    headers: Headers;
+    queries: Queries;
+}
+
+export interface Headers {
+    "Cache-Control": string;
+    Accept: string;
+    "Accept-Encoding": string;
+    "Accept-Language": string;
+    Cookie: string;
+    Host: string;
+    "Max-Forwards": string;
+    "User-Agent": string;
+    "sec-ch-ua": string;
+    "sec-ch-ua-mobile": string;
+    "sec-ch-ua-platform": string;
+    "Sec-Fetch-Site": string;
+    "Sec-Fetch-Mode": string;
+    "Sec-Fetch-User": string;
+    "Sec-Fetch-Dest": string;
+    "X-ARR-LOG-ID": string;
+    "CLIENT-IP": string;
+    "DISGUISED-HOST": string;
+    "X-SITE-DEPLOYMENT-ID": string;
+    "WAS-DEFAULT-HOSTNAME": string;
+    "X-Forwarded-Proto": string;
+    "X-AppService-Proto": string;
+    "X-ARR-SSL": string;
+    "X-Forwarded-TlsVersion": string;
+    "X-Forwarded-For": string;
+    "X-Original-URL": string;
+    "X-WAWS-Unencoded-URL": string;
+}
+
+export interface Queries {
+    [key: string]: string;
+}
+
+export interface DynamicValues {
+    request: Request;
+    title: string;
+    id: string;
+    base_uri: string;
+}
+
+export interface RouteHandler {
+    (workbook: ExcelScript.Workbook, values: DynamicValues): string;
+}
+
+export interface RouteHandlers {
+    [key: string]: RouteHandler;
+}
+
+export interface Message {
+    [key: string]: string;
+}
+
+
+// reference: https://stackoverflow.com/a/77028831
+const contentTemplate = (template: string, dynamicValues: DynamicValues) => {
+    const regex = /{{(.*?)}}/g;
+    const result = template.replace(regex, (match, captureKey) => {
+        let keys: Array<string> = captureKey.split(".");
+        let result = "";
+        if(keys.length == 1) {
+            result = dynamicValues[keys[0]] || "";
+        } else if (keys.length == 2) {
+            result = dynamicValues[keys[0]][keys[1]] || "";
+        } else if (keys.length == 3) {
+            result = dynamicValues[keys[0]][keys[1]][keys[2]] || "";
+        } else if (keys.length == 4) {
+            result = dynamicValues[keys[0]][keys[1]][keys[2]][keys[3]] || "";
+        } else if (keys.length == 5) {
+            result = dynamicValues[keys[0]][keys[1]][keys[2]][keys[3]][keys[4]] || "";
+        } else if (keys.length == 6) {
+            result = dynamicValues[keys[0]][keys[1]][keys[2]][keys[3]][keys[4]][keys[5]] || "";
+        }
+        return result.toString();
+    })
+    return result
+}
+
+function generateRandomString(length: number): string {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let result = "";
+    for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return result;
+}
+
+function loadRoute(workbook: ExcelScript.Workbook, route: string, objects: DynamicValues): string {
+    let sheet: ExcelScript.Worksheet = workbook.getWorksheet("Routes");
+    let table = sheet.getTables()[0];
+    let output: string = "";
+    let title = "";
+    const tableRows = table.getRangeBetweenHeaderAndTotal();
+    for (let i = 0; i < tableRows.getRowCount(); i++) {
+        if (tableRows.getCell(i,0).getText() == route) {
+            output =  tableRows.getCell(i,2).getText();
+            title = tableRows.getCell(i,1).getText();
+        }
+    }
+    objects.title = title;
+    return contentTemplate(output, objects)
+}
+
+function logRequest(workbook: ExcelScript.Workbook, values: DynamicValues)
+{
+    let sheet: ExcelScript.Worksheet = workbook.getWorksheet("RequestsLog");
+    let table = sheet.getTables()[0];
+    let rowData = [values.id, JSON.stringify(values.request)]
+    table.addRow(-1,rowData)
+}
+
+function handleReadPosts(workbook: ExcelScript.Workbook, values: DynamicValues): string {
+    let sheet: ExcelScript.Worksheet = workbook.getWorksheet("Messages");
+    let table = sheet.getTables()[0];
+    var messages: Array<Message> = [];
+    let tableRows = table.getRangeBetweenHeaderAndTotal();
+    for (let i = Math.max(0, tableRows.getRowCount() - 10); i < tableRows.getRowCount(); i++) {
+        let message: Message = {
+            name: tableRows.getCell(i, 0).getText(),
+            message: tableRows.getCell(i, 1).getText()
+            };
+        messages.push(message)
+    }
+    return JSON.stringify(messages);
+}
+
+function encodeHTMLEntities(str: string): string {
+    return str.replace(/[\u00A0-\u9999<>\&]/gim, function (i) {
+        return '&#' + i.charCodeAt(0) + ';';
+    });
+}
+
+function handleWritePost(workbook: ExcelScript.Workbook, values: DynamicValues): string {
+    let sheet: ExcelScript.Worksheet = workbook.getWorksheet("Messages");
+    let table = sheet.getTables()[0];
+    let rowData = [encodeHTMLEntities(values.request.outputs.queries.name), encodeHTMLEntities(values.request.outputs.queries.message), values.id];
+    table.addRow(-1, rowData);
+    return '""';
+}
+
+let base_uri = "REDACTED";
+
+function main(workbook: ExcelScript.Workbook, request: string): string {
+    let contentType = "application/json";
+    let statusCode = 200;
+    let requestObjects: Request = JSON.parse(request);
+    let content = "";
+    let route = "error";
+    let dynamicValues: DynamicValues = {
+        request: requestObjects,
+        title: "",
+        id: generateRandomString(16),
+        base_uri: base_uri,
+    }
+    try {
+        route = requestObjects.outputs.queries.route;
+    } catch (error) {
+        route = "index";
+    }
+    logRequest(workbook, dynamicValues)
+    if (route == "read_posts") {
+        content = handleReadPosts(workbook, dynamicValues);
+    } else if (route == "write_post") {
+        content = handleWritePost(workbook, dynamicValues);
+    } else {
+        content = loadRoute(workbook, route, dynamicValues);
+        contentType = "text/html";
+    }
+
+    return JSON.stringify({
+        contentType: contentType,
+        content: content,
+        statusCode: statusCode
+});
+}
+
+
